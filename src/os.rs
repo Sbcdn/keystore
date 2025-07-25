@@ -9,29 +9,29 @@ use base64::{engine::general_purpose, Engine as _};
 #[cfg(target_os = "linux")]
 use keyring::Entry;
 
-use crate::{create_signing_key, KeyStore};
+use crate::{create_signing_key, Key, KeyStore};
 
 pub struct KeyChain;
 impl KeyStore for KeyChain {
-    fn add_signing_key(&self, id: &str, signing_key: &SigningKey) -> Result<()> {
+    fn add_signing_key(&self, id: &str, signing_key: &Key) -> Result<()> {
         add_signing_key_to_keychain(id, signing_key).context(format!(
             "failed to store signing key for id {} in keychain",
             id
         ))
     }
 
-    fn get_signing_key(&self, id: &str) -> Result<SigningKey> {
+    fn get_signing_key(&self, id: &str) -> Result<Key> {
         get_signing_key_from_keychain(id).context(format!(
             "failed to load signing key for id {} from keychain",
             id
         ))
     }
 
-    fn get_or_create_signing_key(&self, id: &str) -> Result<SigningKey> {
+    fn get_or_create_signing_key(&self, id: &str) -> Result<Key> {
         match self.get_signing_key(id) {
             Ok(key) => Ok(key),
             Err(_) => {
-                let new_key = create_signing_key();
+                let new_key = Key::Ed25519SigningKey(create_signing_key());
                 self.add_signing_key(id, &new_key).with_context(|| {
                     format!("Failed to create and store new key for id: {}", id)
                 })?;
@@ -53,7 +53,7 @@ pub fn add_signing_key_to_keychain(
 }
 
 #[cfg(target_os = "linux")]
-pub fn add_signing_key_to_keychain(id: &str, signing_key: &SigningKey) -> Result<()> {
+pub fn add_signing_key_to_keychain(id: &str, signing_key: &Key) -> Result<()> {
     let signing_key_bytes = signing_key.to_bytes();
     let signing_key_str = general_purpose::STANDARD.encode(signing_key_bytes);
 
@@ -77,7 +77,7 @@ pub fn get_signing_key_from_keychain(id: &str) -> Result<SigningKey> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn get_signing_key_from_keychain(id: &str) -> Result<SigningKey> {
+pub fn get_signing_key_from_keychain(id: &str) -> Result<Key> {
     let keyring = Entry::new(id, "signing_key")?;
 
     let signing_key_str = keyring
@@ -87,5 +87,5 @@ pub fn get_signing_key_from_keychain(id: &str) -> Result<SigningKey> {
     let signing_key_bytes = general_purpose::STANDARD.decode(signing_key_str)?;
     let mut signing_key_array = [0u8; 32];
     signing_key_array.copy_from_slice(&signing_key_bytes[..32]);
-    Ok(SigningKey::from(signing_key_array))
+    Ok(Key::Ed25519SigningKey(SigningKey::from(signing_key_array)))
 }

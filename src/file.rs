@@ -1,4 +1,4 @@
-use crate::{create_signing_key, KeyStore};
+use crate::{create_signing_key, Key, KeyStore};
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Nonce,
@@ -17,10 +17,17 @@ struct EncryptedKeyStoreFile {
     keys: HashMap<String, EncryptedKey>,
 }
 
+#[derive(Serialize, Deserialize, Default)]
+pub(crate) enum KeyType {
+    #[default]
+    Ed25519,
+    Byte,
+}
 #[derive(Serialize, Deserialize)]
 struct EncryptedKey {
     nonce: Vec<u8>,
     ciphertext: Vec<u8>,
+    keytype: KeyType,
 }
 
 pub struct FileStore {
@@ -79,7 +86,7 @@ impl FileStore {
         fs::write(&self.file_path, content).context("Failed to write keystore file")
     }
 
-    fn encrypt_key(&self, key: &SigningKey) -> Result<EncryptedKey> {
+    fn encrypt_key(&self, key: &Key) -> Result<EncryptedKey> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
         let ciphertext = self
@@ -87,13 +94,16 @@ impl FileStore {
             .encrypt(&nonce, key.to_bytes().as_ref())
             .map_err(|e| anyhow!("Failed to encrypt key: {}", e))?;
 
+        let keytype = key.keytype();
+
         Ok(EncryptedKey {
             nonce: nonce.to_vec(),
             ciphertext,
+            keytype,
         })
     }
 
-    fn decrypt_key(&self, encrypted: &EncryptedKey) -> Result<SigningKey> {
+    fn decrypt_key(&self, encrypted: &EncryptedKey) -> Result<Key> {
         let nonce = Nonce::from_slice(&encrypted.nonce);
 
         let plaintext = self
@@ -107,19 +117,23 @@ impl FileStore {
 
         let mut key_array = [0u8; 32];
         key_array.copy_from_slice(&plaintext);
-        Ok(SigningKey::from(key_array))
+
+        match encrypted.keytype {
+            KeyType::Ed25519 => Ok(Key::Ed25519SigningKey(SigningKey::from(key_array))),
+            KeyType::Byte => Ok(Key::Byte(plaintext)),
+        }
     }
 }
 
 impl KeyStore for FileStore {
-    fn add_signing_key(&self, id: &str, signing_key: &SigningKey) -> Result<()> {
+    fn add_signing_key(&self, id: &str, signing_key: &Key) -> Result<()> {
         let mut store = self.read_store()?;
         let encrypted = self.encrypt_key(signing_key)?;
         store.keys.insert(id.to_string(), encrypted);
         self.write_store(&store)
     }
 
-    fn get_signing_key(&self, id: &str) -> Result<SigningKey> {
+    fn get_signing_key(&self, id: &str) -> Result<Key> {
         let store = self.read_store()?;
 
         let encrypted = store
@@ -130,13 +144,13 @@ impl KeyStore for FileStore {
         self.decrypt_key(encrypted)
     }
 
-    fn get_or_create_signing_key(&self, id: &str) -> Result<SigningKey> {
+    fn get_or_create_signing_key(&self, id: &str) -> Result<Key> {
         match self.get_signing_key(id) {
             Ok(key) => Ok(key),
             Err(_) => {
                 let new_key = create_signing_key();
-                self.add_signing_key(id, &new_key)?;
-                Ok(new_key)
+                self.add_signing_key(id, &Key::Ed25519SigningKey(new_key.clone()))?;
+                Ok(Key::Ed25519SigningKey(new_key))
             }
         }
     }
@@ -171,10 +185,17 @@ mod tests {
 
         let id = "test_key";
         let original_key = create_signing_key();
-        store.add_signing_key(id, &original_key).unwrap();
+        store
+            .add_signing_key(id, &Key::Ed25519SigningKey(original_key.clone()))
+            .unwrap();
 
-        let retrieved_key = store.get_signing_key(id).unwrap();
-        assert_eq!(original_key.to_bytes(), retrieved_key.to_bytes());
+        let retrieved_key: [u8; 32] = store
+            .get_signing_key(id)
+            .unwrap()
+            .to_bytes()
+            .try_into()
+            .unwrap();
+        assert_eq!(original_key.to_bytes(), retrieved_key);
     }
 
     #[test]
