@@ -110,13 +110,17 @@ impl FileStore {
             .cipher
             .decrypt(nonce, encrypted.ciphertext.as_ref())
             .map_err(|e| anyhow!("Failed to decrypt key: {}", e))?;
-
-        if plaintext.len() != 32 {
-            bail!("Decrypted data has incorrect length for ed25519 key");
-        }
-
         let mut key_array = [0u8; 32];
-        key_array.copy_from_slice(&plaintext);
+        match encrypted.keytype {
+            KeyType::Ed25519 => {
+                if plaintext.len() != 32 {
+                    bail!("Decrypted data has incorrect length for ed25519 key");
+                } else {
+                    key_array.copy_from_slice(&plaintext);
+                }
+            }
+            KeyType::Byte => {}
+        }
 
         match encrypted.keytype {
             KeyType::Ed25519 => Ok(Key::Ed25519SigningKey(SigningKey::from(key_array))),
